@@ -198,25 +198,33 @@ function parseMachine(rawText, requestedMode) {
 function buildMemoryInstruction() {
   return `SYSTEM INSTRUCTION: DFA/NFA STRICT FORMAT
 
-Always encode automata in strict lines. Do NOT output ASCII art, tables, or prose-only transitions.
-
-Output schema (one line per state):
-<state_id> - <flags> - <symbol_list>(<target_state>) <symbol_list>(<target_state>) ...
+Use this exact grammar:
+Format: id - type - transitions
 
 Definitions:
-- state_id: unique state name (e.g., q0, q1, trap).
-- flags: lowercase labels separated by comma or space (start, accept/final, trap, normal).
-- symbol_list: one or more symbols separated by commas mapped to same target.
-- target_state: destination state_id and must exist as a state line.
+- id: unique state identifier (example: q0, q1, qt)
+- type: one of start, accept, trap, normal
+- transitions: transition tokens separated by spaces
 
-Hard rules:
-1) Exactly this layout: state - flags - transitions.
-2) One state per line.
-3) Every transition token must be symbols(target).
-4) Keep state names consistent.
-5) For DFA requests: one start state and at most one target per symbol from each state.
-6) For NFA requests: multiple targets/start states allowed.
-7) Include trap state explicitly when needed.`;
+Transition rules:
+- 1(q2) means input 1 goes to q2
+- 0,1(q1) means grouped inputs 0 and 1 both go to q1
+- each token must be symbol_list(target_state)
+- each referenced target_state must exist as its own state line
+
+Hard constraints:
+1) Exactly one state per line.
+2) Exactly two " - " separators per line: id - type - transitions.
+3) Do not output ASCII art, tables, markdown diagrams, or prose transitions.
+4) Keep state names consistent and case-sensitive.
+5) For DFA requests: one start state and max one target per symbol from each state.
+6) For NFA requests: multiple start states / branching targets are allowed.
+7) Include trap states explicitly when needed.
+
+Example:
+q0 - start - 1(q2) 0(qt)
+q1 - accept - 0,1(q1)
+qt - trap - 0,1(qt)`;
 }
 
 function createLayout(machine) {

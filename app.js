@@ -1,0 +1,442 @@
+const machineInput = document.getElementById('machineInput');
+const parseBtn = document.getElementById('parseBtn');
+const loadSampleBtn = document.getElementById('loadSampleBtn');
+const messages = document.getElementById('messages');
+const jsonOutput = document.getElementById('jsonOutput');
+const promptOutput = document.getElementById('promptOutput');
+const copyJsonBtn = document.getElementById('copyJsonBtn');
+const copyPromptBtn = document.getElementById('copyPromptBtn');
+const graphSvg = document.getElementById('graphSvg');
+const zoomInBtn = document.getElementById('zoomInBtn');
+const zoomOutBtn = document.getElementById('zoomOutBtn');
+const resetViewBtn = document.getElementById('resetViewBtn');
+
+const SAMPLE = `q0 - start - 1(q2) 0(qt)
+q1 - accept - 1,0(q1)
+q2 - middle - 0(q1) 1(q2)
+qt - trap - 1,0(qt)`;
+
+const state = {
+  scale: 1,
+  machine: null,
+};
+
+function addMessage(level, text) {
+  const line = document.createElement('div');
+  line.className = `msg-${level}`;
+  line.textContent = text;
+  messages.appendChild(line);
+}
+
+function clearMessages() {
+  messages.innerHTML = '';
+}
+
+function parseFlags(flagChunk) {
+  if (!flagChunk.trim()) return [];
+  return flagChunk
+    .split(',')
+    .flatMap((x) => x.split(' '))
+    .map((x) => x.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function parseTransitions(transitionChunk, lineNo) {
+  const parts = transitionChunk.trim().split(/\s+/).filter(Boolean);
+  const transitions = [];
+  const errors = [];
+
+  for (const part of parts) {
+    const match = part.match(/^([^()]+)\(([^()]+)\)$/);
+    if (!match) {
+      errors.push(`Line ${lineNo}: invalid transition token "${part}".`);
+      continue;
+    }
+    const rawSymbols = match[1].split(',').map((s) => s.trim()).filter(Boolean);
+    const target = match[2].trim();
+    if (!target) {
+      errors.push(`Line ${lineNo}: missing target in "${part}".`);
+      continue;
+    }
+    if (rawSymbols.length === 0) {
+      errors.push(`Line ${lineNo}: no symbols in "${part}".`);
+      continue;
+    }
+    rawSymbols.forEach((symbol) => {
+      transitions.push({ symbol, target });
+    });
+  }
+
+  return { transitions, errors };
+}
+
+function parseMachine(rawText) {
+  const lines = rawText
+    .split('\n')
+    .map((line, idx) => ({ original: line, lineNo: idx + 1 }))
+    .filter((item) => item.original.trim() && !item.original.trim().startsWith('#'));
+
+  const map = new Map();
+  const diagnostics = { errors: [], warnings: [], infos: [] };
+
+  if (lines.length === 0) {
+    diagnostics.errors.push('Input is empty. Add at least one state line.');
+    return { diagnostics };
+  }
+
+  for (const { original, lineNo } of lines) {
+    const chunks = original.split('-').map((c) => c.trim());
+    if (chunks.length < 3) {
+      diagnostics.errors.push(`Line ${lineNo}: expected 3 sections split by "-".`);
+      continue;
+    }
+
+    const [name, flagChunk, ...transitionParts] = chunks;
+    if (!name) {
+      diagnostics.errors.push(`Line ${lineNo}: missing state name.`);
+      continue;
+    }
+
+    if (map.has(name)) {
+      diagnostics.errors.push(`Line ${lineNo}: duplicate state definition "${name}".`);
+      continue;
+    }
+
+    const flags = parseFlags(flagChunk);
+    const parsedTransitions = parseTransitions(transitionParts.join('-'), lineNo);
+    diagnostics.errors.push(...parsedTransitions.errors);
+
+    map.set(name, {
+      id: name,
+      flags,
+      transitions: parsedTransitions.transitions,
+      lineNo,
+    });
+  }
+
+  if (diagnostics.errors.length > 0) {
+    return { diagnostics };
+  }
+
+  const states = Array.from(map.values());
+  const stateNames = new Set(states.map((s) => s.id));
+
+  for (const s of states) {
+    for (const tr of s.transitions) {
+      if (!stateNames.has(tr.target)) {
+        diagnostics.warnings.push(`State "${s.id}" references unknown target "${tr.target}"; creating implicit node.`);
+      }
+    }
+  }
+
+  // Create implicit states for missing targets.
+  const missingTargets = new Set(
+    states.flatMap((s) => s.transitions.map((t) => t.target)).filter((t) => !stateNames.has(t)),
+  );
+
+  for (const missing of missingTargets) {
+    states.push({
+      id: missing,
+      flags: ['implicit'],
+      transitions: [],
+      lineNo: null,
+    });
+    stateNames.add(missing);
+  }
+
+  const startStates = states.filter((s) => s.flags.includes('start')).map((s) => s.id);
+  const acceptStates = states.filter((s) => s.flags.includes('accept') || s.flags.includes('final')).map((s) => s.id);
+
+  if (startStates.length === 0) {
+    diagnostics.warnings.push('No start state marked. Add "start" flag for at least one state.');
+  }
+  if (startStates.length > 1) {
+    diagnostics.infos.push('Multiple start states detected; machine is treated as NFA.');
+  }
+
+  const seen = new Set();
+  for (const s of states) {
+    for (const tr of s.transitions) {
+      const key = `${s.id}|${tr.symbol}|${tr.target}`;
+      if (seen.has(key)) {
+        diagnostics.warnings.push(`Duplicate transition ${s.id} --${tr.symbol}--> ${tr.target}.`);
+      }
+      seen.add(key);
+    }
+  }
+
+  const alphabet = [...new Set(states.flatMap((s) => s.transitions.map((t) => t.symbol)))].sort();
+
+  const model = {
+    type: startStates.length > 1 ? 'NFA' : 'DFA_or_NFA',
+    states: states.map((s) => ({ id: s.id, flags: s.flags })),
+    start_states: startStates,
+    accept_states: acceptStates,
+    alphabet,
+    transitions: states.flatMap((s) =>
+      s.transitions.map((tr) => ({ from: s.id, symbol: tr.symbol, to: tr.target })),
+    ),
+    meta: {
+      total_states: states.length,
+      total_transitions: states.reduce((acc, cur) => acc + cur.transitions.length, 0),
+    },
+  };
+
+  return { model, diagnostics };
+}
+
+function buildMemoryInstruction() {
+  return `When user describes a DFA/NFA, ALWAYS output each state on one line in this exact format:
+<state_name> - <flags> - <symbol1>(<target_state>) <symbol2,target_symbol>(<target_state>)
+
+Rules:
+1) Use hyphen separators exactly as: state - flags - transitions.
+2) Flags are lowercase words separated by comma or space (example: start, accept, trap).
+3) Each transition token must be symbol-list(target), no ASCII art.
+4) Multiple symbols to the same target are comma-separated inside symbol-list.
+5) One state per line, no tables, no markdown diagrams.
+6) Keep deterministic machines with one start state; if multiple start states are needed, classify as NFA.
+7) If a target state is referenced, it must exist as a state line.
+8) Add trap state explicitly when needed.
+
+Example:
+q0 - start - 1(q2) 0(qt)
+q1 - accept - 1,0(q1)
+qt - trap - 1,0(qt)`;
+}
+
+function createLayout(machine) {
+  const nodes = machine.states.map((s) => ({ ...s }));
+  const n = Math.max(nodes.length, 1);
+  const cols = Math.ceil(Math.sqrt(n));
+  const spacing = Math.max(110, 720 / Math.sqrt(n));
+
+  nodes.forEach((node, i) => {
+    const row = Math.floor(i / cols);
+    const col = i % cols;
+    node.x = 120 + col * spacing;
+    node.y = 120 + row * spacing;
+  });
+
+  // Repel close nodes to reduce collisions for dense graphs.
+  const minDist = Math.max(70, spacing * 0.6);
+  for (let pass = 0; pass < 120; pass += 1) {
+    let moved = false;
+    for (let i = 0; i < nodes.length; i += 1) {
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        const a = nodes[i];
+        const b = nodes[j];
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy) || 0.001;
+        if (dist < minDist) {
+          const push = (minDist - dist) / 2;
+          dx /= dist;
+          dy /= dist;
+          a.x -= dx * push;
+          a.y -= dy * push;
+          b.x += dx * push;
+          b.y += dy * push;
+          moved = true;
+        }
+      }
+    }
+    if (!moved) break;
+  }
+
+  return nodes;
+}
+
+function renderGraph(machine) {
+  graphSvg.innerHTML = '';
+
+  if (!machine || machine.states.length === 0) return;
+
+  const nodes = createLayout(machine);
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const radius = Math.max(22, Math.min(34, 55 - Math.log(machine.states.length + 1) * 7));
+
+  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+  defs.innerHTML = `
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#9db3ff"></path>
+    </marker>`;
+  graphSvg.appendChild(defs);
+
+  const edgesGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  edgesGroup.setAttribute('stroke', '#9db3ff');
+  edgesGroup.setAttribute('fill', 'none');
+  edgesGroup.setAttribute('stroke-width', '1.7');
+
+  const nodeGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+
+  machine.transitions.forEach((edge) => {
+    const source = nodeMap.get(edge.from);
+    const target = nodeMap.get(edge.to);
+    if (!source || !target) return;
+
+    const selfLoop = source.id === target.id;
+    if (selfLoop) {
+      const loop = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      const d = `M ${source.x} ${source.y - radius} C ${source.x + radius * 1.4} ${source.y - radius * 2.6}, ${source.x - radius * 1.4} ${source.y - radius * 2.6}, ${source.x} ${source.y - radius}`;
+      loop.setAttribute('d', d);
+      loop.setAttribute('marker-end', 'url(#arrow)');
+      edgesGroup.appendChild(loop);
+
+      const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      label.setAttribute('x', `${source.x}`);
+      label.setAttribute('y', `${source.y - radius * 2.2}`);
+      label.setAttribute('text-anchor', 'middle');
+      label.setAttribute('fill', '#ccd6ff');
+      label.setAttribute('font-size', '12');
+      label.textContent = edge.symbol;
+      edgesGroup.appendChild(label);
+      return;
+    }
+
+    const dx = target.x - source.x;
+    const dy = target.y - source.y;
+    const dist = Math.hypot(dx, dy);
+    const ux = dx / dist;
+    const uy = dy / dist;
+
+    const x1 = source.x + ux * radius;
+    const y1 = source.y + uy * radius;
+    const x2 = target.x - ux * radius;
+    const y2 = target.y - uy * radius;
+
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', `${x1}`);
+    line.setAttribute('y1', `${y1}`);
+    line.setAttribute('x2', `${x2}`);
+    line.setAttribute('y2', `${y2}`);
+    line.setAttribute('marker-end', 'url(#arrow)');
+    edgesGroup.appendChild(line);
+
+    const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    label.setAttribute('x', `${(x1 + x2) / 2}`);
+    label.setAttribute('y', `${(y1 + y2) / 2 - 6}`);
+    label.setAttribute('text-anchor', 'middle');
+    label.setAttribute('fill', '#ccd6ff');
+    label.setAttribute('font-size', '12');
+    label.textContent = edge.symbol;
+    edgesGroup.appendChild(label);
+  });
+
+  graphSvg.appendChild(edgesGroup);
+
+  nodes.forEach((node) => {
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+
+    const isAccept = node.flags.includes('accept') || node.flags.includes('final');
+    const isStart = node.flags.includes('start');
+    const isTrap = node.flags.includes('trap');
+
+    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    circle.setAttribute('cx', `${node.x}`);
+    circle.setAttribute('cy', `${node.y}`);
+    circle.setAttribute('r', `${radius}`);
+    circle.setAttribute('fill', isTrap ? '#291a24' : '#1f2a40');
+    circle.setAttribute('stroke', isStart ? '#8ce4a3' : '#7b96d8');
+    circle.setAttribute('stroke-width', '2');
+    g.appendChild(circle);
+
+    if (isAccept) {
+      const inner = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      inner.setAttribute('cx', `${node.x}`);
+      inner.setAttribute('cy', `${node.y}`);
+      inner.setAttribute('r', `${radius - 6}`);
+      inner.setAttribute('fill', 'none');
+      inner.setAttribute('stroke', '#96acf0');
+      inner.setAttribute('stroke-width', '1.5');
+      g.appendChild(inner);
+    }
+
+    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    text.setAttribute('x', `${node.x}`);
+    text.setAttribute('y', `${node.y + 4}`);
+    text.setAttribute('text-anchor', 'middle');
+    text.setAttribute('fill', '#e8eeff');
+    text.setAttribute('font-size', '13');
+    text.textContent = node.id;
+    g.appendChild(text);
+
+    nodeGroup.appendChild(g);
+  });
+
+  graphSvg.appendChild(nodeGroup);
+
+  // Fit viewbox with margins so many nodes stay inside viewport.
+  const xs = nodes.map((n) => n.x);
+  const ys = nodes.map((n) => n.y);
+  const minX = Math.min(...xs) - 120;
+  const maxX = Math.max(...xs) + 120;
+  const minY = Math.min(...ys) - 140;
+  const maxY = Math.max(...ys) + 120;
+
+  graphSvg.setAttribute('viewBox', `${minX} ${minY} ${maxX - minX} ${maxY - minY}`);
+  graphSvg.style.transform = `scale(${state.scale})`;
+}
+
+function renderParseResult(result) {
+  clearMessages();
+  if (result.diagnostics.errors.length > 0) {
+    result.diagnostics.errors.forEach((m) => addMessage('err', m));
+    jsonOutput.textContent = 'Cannot generate JSON due to errors.';
+    promptOutput.textContent = buildMemoryInstruction();
+    state.machine = null;
+    renderGraph(null);
+    return;
+  }
+
+  result.diagnostics.warnings.forEach((m) => addMessage('warn', m));
+  result.diagnostics.infos.forEach((m) => addMessage('ok', m));
+
+  if (result.diagnostics.warnings.length === 0 && result.diagnostics.infos.length === 0) {
+    addMessage('ok', 'Machine parsed successfully with no warnings.');
+  }
+
+  state.machine = result.model;
+  jsonOutput.textContent = JSON.stringify(result.model, null, 2);
+  promptOutput.textContent = buildMemoryInstruction();
+  renderGraph(result.model);
+}
+
+async function copyText(content, label) {
+  try {
+    await navigator.clipboard.writeText(content);
+    addMessage('ok', `${label} copied to clipboard.`);
+  } catch {
+    addMessage('warn', `Could not copy ${label}. Browser clipboard permission denied.`);
+  }
+}
+
+parseBtn.addEventListener('click', () => {
+  const result = parseMachine(machineInput.value);
+  renderParseResult(result);
+});
+
+loadSampleBtn.addEventListener('click', () => {
+  machineInput.value = SAMPLE;
+  const result = parseMachine(machineInput.value);
+  renderParseResult(result);
+});
+
+copyJsonBtn.addEventListener('click', () => copyText(jsonOutput.textContent, 'JSON'));
+copyPromptBtn.addEventListener('click', () => copyText(promptOutput.textContent, 'instruction'));
+
+zoomInBtn.addEventListener('click', () => {
+  state.scale = Math.min(2.5, state.scale + 0.15);
+  graphSvg.style.transform = `scale(${state.scale})`;
+});
+zoomOutBtn.addEventListener('click', () => {
+  state.scale = Math.max(0.55, state.scale - 0.15);
+  graphSvg.style.transform = `scale(${state.scale})`;
+});
+resetViewBtn.addEventListener('click', () => {
+  state.scale = 1;
+  graphSvg.style.transform = 'scale(1)';
+});
+
+machineInput.value = SAMPLE;
+renderParseResult(parseMachine(SAMPLE));

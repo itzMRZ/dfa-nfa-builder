@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LLM-Friendly DFA/NFA Builder</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header>
+        <h1>LLM-Friendly DFA/NFA Generator</h1>
+        <p>
+          Write states in a strict line format, generate a machine model, and visualize it in a collision-aware graph view.
+        </p>
+      </header>
+
+      <section class="panel editor-panel">
+        <div class="panel-title-row">
+          <h2>Machine Definition</h2>
+          <div class="panel-actions">
+            <button id="loadSampleBtn" type="button">Load Sample</button>
+            <button id="parseBtn" type="button" class="primary">Generate</button>
+          </div>
+        </div>
+        <label for="machineInput" class="hint">
+          One state per line: <code>state - flags - symbol(target) symbol2,symbol3(target)</code>
+        </label>
+        <textarea
+          id="machineInput"
+          spellcheck="false"
+          placeholder="q0 - start - 1(q2) 0(qt)\nq1 - accept - 1,0(q1)\nqt - trap - 1,0(qt)"
+        ></textarea>
+        <div id="messages" class="messages" role="status" aria-live="polite"></div>
+      </section>
+
+      <section class="panel output-panel">
+        <div class="panel-title-row">
+          <h2>LLM JSON Output</h2>
+          <button id="copyJsonBtn" type="button">Copy JSON</button>
+        </div>
+        <pre id="jsonOutput" class="output-box">Generate to view normalized machine JSON...</pre>
+      </section>
+
+      <section class="panel output-panel">
+        <div class="panel-title-row">
+          <h2>Prompt / Memory Instruction</h2>
+          <button id="copyPromptBtn" type="button">Copy Instruction</button>
+        </div>
+        <pre id="promptOutput" class="output-box">Generate to view reusable LLM instruction...</pre>
+      </section>
+
+      <section class="panel graph-panel">
+        <div class="panel-title-row">
+          <h2>Graph View (Dark Mode)</h2>
+          <div class="panel-actions">
+            <button id="zoomInBtn" type="button">+</button>
+            <button id="zoomOutBtn" type="button">−</button>
+            <button id="resetViewBtn" type="button">Reset</button>
+          </div>
+        </div>
+        <div id="graphWrapper" class="graph-wrapper">
+          <svg id="graphSvg" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid meet" aria-label="State machine graph"></svg>
+        </div>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

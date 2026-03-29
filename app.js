@@ -1,13 +1,6 @@
 const machineInput = document.getElementById('machineInput');
-const machineMode = document.getElementById('machineMode');
-const testInput = document.getElementById('testInput');
-const testResult = document.getElementById('testResult');
-const runTestBtn = document.getElementById('runTestBtn');
 const parseBtn = document.getElementById('parseBtn');
 const loadSampleBtn = document.getElementById('loadSampleBtn');
-const openInstructionBtn = document.getElementById('openInstructionBtn');
-const closeInstructionBtn = document.getElementById('closeInstructionBtn');
-const instructionModal = document.getElementById('instructionModal');
 const messages = document.getElementById('messages');
 const jsonOutput = document.getElementById('jsonOutput');
 const promptOutput = document.getElementById('promptOutput');
@@ -20,21 +13,19 @@ const resetViewBtn = document.getElementById('resetViewBtn');
 
 const SAMPLE = `q0 - start - 1(q2) 0(qt)
 q1 - accept - 1,0(q1)
-q2 - normal - 0(q1) 1(q2)
+q2 - middle - 0(q1) 1(q2)
 qt - trap - 1,0(qt)`;
 
-const state = { scale: 1, machine: null };
+const state = {
+  scale: 1,
+  machine: null,
+};
 
 function addMessage(level, text) {
   const line = document.createElement('div');
   line.className = `msg-${level}`;
   line.textContent = text;
   messages.appendChild(line);
-}
-
-function setTestResult(kind, text) {
-  testResult.className = `test-result ${kind}`;
-  testResult.textContent = text;
 }
 
 function clearMessages() {
@@ -63,7 +54,6 @@ function parseTransitions(transitionChunk, lineNo) {
     }
     const rawSymbols = match[1].split(',').map((s) => s.trim()).filter(Boolean);
     const target = match[2].trim();
-
     if (!target) {
       errors.push(`Line ${lineNo}: missing target in "${part}".`);
       continue;
@@ -72,14 +62,15 @@ function parseTransitions(transitionChunk, lineNo) {
       errors.push(`Line ${lineNo}: no symbols in "${part}".`);
       continue;
     }
-
-    rawSymbols.forEach((symbol) => transitions.push({ symbol, target }));
+    rawSymbols.forEach((symbol) => {
+      transitions.push({ symbol, target });
+    });
   }
 
   return { transitions, errors };
 }
 
-function parseMachine(rawText, requestedMode) {
+function parseMachine(rawText) {
   const lines = rawText
     .split('\n')
     .map((line, idx) => ({ original: line, lineNo: idx + 1 }))
@@ -105,6 +96,7 @@ function parseMachine(rawText, requestedMode) {
       diagnostics.errors.push(`Line ${lineNo}: missing state name.`);
       continue;
     }
+
     if (map.has(name)) {
       diagnostics.errors.push(`Line ${lineNo}: duplicate state definition "${name}".`);
       continue;
@@ -122,7 +114,9 @@ function parseMachine(rawText, requestedMode) {
     });
   }
 
-  if (diagnostics.errors.length > 0) return { diagnostics };
+  if (diagnostics.errors.length > 0) {
+    return { diagnostics };
+  }
 
   const states = Array.from(map.values());
   const stateNames = new Set(states.map((s) => s.id));
@@ -135,60 +129,56 @@ function parseMachine(rawText, requestedMode) {
     }
   }
 
+  // Create implicit states for missing targets.
   const missingTargets = new Set(
     states.flatMap((s) => s.transitions.map((t) => t.target)).filter((t) => !stateNames.has(t)),
   );
 
   for (const missing of missingTargets) {
-    states.push({ id: missing, flags: ['implicit'], transitions: [], lineNo: null });
+    states.push({
+      id: missing,
+      flags: ['implicit'],
+      transitions: [],
+      lineNo: null,
+    });
     stateNames.add(missing);
   }
 
   const startStates = states.filter((s) => s.flags.includes('start')).map((s) => s.id);
   const acceptStates = states.filter((s) => s.flags.includes('accept') || s.flags.includes('final')).map((s) => s.id);
 
-  if (startStates.length === 0) diagnostics.warnings.push('No start state marked. Add "start" flag for at least one state.');
-  if (startStates.length > 1 && requestedMode === 'DFA') {
-    diagnostics.errors.push('DFA mode selected but multiple start states found. Use NFA mode or one start state.');
+  if (startStates.length === 0) {
+    diagnostics.warnings.push('No start state marked. Add "start" flag for at least one state.');
+  }
+  if (startStates.length > 1) {
+    diagnostics.infos.push('Multiple start states detected; machine is treated as NFA.');
   }
 
   const seen = new Set();
   for (const s of states) {
-    const outgoingBySymbol = new Map();
     for (const tr of s.transitions) {
       const key = `${s.id}|${tr.symbol}|${tr.target}`;
-      if (seen.has(key)) diagnostics.warnings.push(`Duplicate transition ${s.id} --${tr.symbol}--> ${tr.target}.`);
-      seen.add(key);
-
-      const symbolTargets = outgoingBySymbol.get(tr.symbol) || new Set();
-      symbolTargets.add(tr.target);
-      outgoingBySymbol.set(tr.symbol, symbolTargets);
-    }
-
-    if (requestedMode === 'DFA') {
-      for (const [symbol, targets] of outgoingBySymbol.entries()) {
-        if (targets.size > 1) {
-          diagnostics.errors.push(`DFA mode violation at state "${s.id}": symbol "${symbol}" has multiple targets.`);
-        }
+      if (seen.has(key)) {
+        diagnostics.warnings.push(`Duplicate transition ${s.id} --${tr.symbol}--> ${tr.target}.`);
       }
+      seen.add(key);
     }
   }
-
-  if (diagnostics.errors.length > 0) return { diagnostics };
 
   const alphabet = [...new Set(states.flatMap((s) => s.transitions.map((t) => t.symbol)))].sort();
 
   const model = {
-    type: requestedMode,
+    type: startStates.length > 1 ? 'NFA' : 'DFA_or_NFA',
     states: states.map((s) => ({ id: s.id, flags: s.flags })),
     start_states: startStates,
     accept_states: acceptStates,
     alphabet,
-    transitions: states.flatMap((s) => s.transitions.map((tr) => ({ from: s.id, symbol: tr.symbol, to: tr.target }))),
+    transitions: states.flatMap((s) =>
+      s.transitions.map((tr) => ({ from: s.id, symbol: tr.symbol, to: tr.target })),
+    ),
     meta: {
       total_states: states.length,
       total_transitions: states.reduce((acc, cur) => acc + cur.transitions.length, 0),
-      requested_mode: requestedMode,
     },
   };
 
@@ -196,35 +186,23 @@ function parseMachine(rawText, requestedMode) {
 }
 
 function buildMemoryInstruction() {
-  return `SYSTEM INSTRUCTION: DFA/NFA STRICT FORMAT
+  return `When user describes a DFA/NFA, ALWAYS output each state on one line in this exact format:
+<state_name> - <flags> - <symbol1>(<target_state>) <symbol2,target_symbol>(<target_state>)
 
-Use this exact grammar:
-Format: id - type - transitions
-
-Definitions:
-- id: unique state identifier (example: q0, q1, qt)
-- type: one of start, accept, trap, normal
-- transitions: transition tokens separated by spaces
-
-Transition rules:
-- 1(q2) means input 1 goes to q2
-- 0,1(q1) means grouped inputs 0 and 1 both go to q1
-- each token must be symbol_list(target_state)
-- each referenced target_state must exist as its own state line
-
-Hard constraints:
-1) Exactly one state per line.
-2) Exactly two " - " separators per line: id - type - transitions.
-3) Do not output ASCII art, tables, markdown diagrams, or prose transitions.
-4) Keep state names consistent and case-sensitive.
-5) For DFA requests: one start state and max one target per symbol from each state.
-6) For NFA requests: multiple start states / branching targets are allowed.
-7) Include trap states explicitly when needed.
+Rules:
+1) Use hyphen separators exactly as: state - flags - transitions.
+2) Flags are lowercase words separated by comma or space (example: start, accept, trap).
+3) Each transition token must be symbol-list(target), no ASCII art.
+4) Multiple symbols to the same target are comma-separated inside symbol-list.
+5) One state per line, no tables, no markdown diagrams.
+6) Keep deterministic machines with one start state; if multiple start states are needed, classify as NFA.
+7) If a target state is referenced, it must exist as a state line.
+8) Add trap state explicitly when needed.
 
 Example:
 q0 - start - 1(q2) 0(qt)
-q1 - accept - 0,1(q1)
-qt - trap - 0,1(qt)`;
+q1 - accept - 1,0(q1)
+qt - trap - 1,0(qt)`;
 }
 
 function createLayout(machine) {
@@ -240,6 +218,7 @@ function createLayout(machine) {
     node.y = 120 + row * spacing;
   });
 
+  // Repel close nodes to reduce collisions for dense graphs.
   const minDist = Math.max(70, spacing * 0.6);
   for (let pass = 0; pass < 120; pass += 1) {
     let moved = false;
@@ -270,6 +249,7 @@ function createLayout(machine) {
 
 function renderGraph(machine) {
   graphSvg.innerHTML = '';
+
   if (!machine || machine.states.length === 0) return;
 
   const nodes = createLayout(machine);
@@ -295,7 +275,8 @@ function renderGraph(machine) {
     const target = nodeMap.get(edge.to);
     if (!source || !target) return;
 
-    if (source.id === target.id) {
+    const selfLoop = source.id === target.id;
+    if (selfLoop) {
       const loop = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       const d = `M ${source.x} ${source.y - radius} C ${source.x + radius * 1.4} ${source.y - radius * 2.6}, ${source.x - radius * 1.4} ${source.y - radius * 2.6}, ${source.x} ${source.y - radius}`;
       loop.setAttribute('d', d);
@@ -346,6 +327,7 @@ function renderGraph(machine) {
 
   nodes.forEach((node) => {
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+
     const isAccept = node.flags.includes('accept') || node.flags.includes('final');
     const isStart = node.flags.includes('start');
     const isTrap = node.flags.includes('trap');
@@ -384,6 +366,7 @@ function renderGraph(machine) {
 
   graphSvg.appendChild(nodeGroup);
 
+  // Fit viewbox with margins so many nodes stay inside viewport.
   const xs = nodes.map((n) => n.x);
   const ys = nodes.map((n) => n.y);
   const minX = Math.min(...xs) - 120;
@@ -395,54 +378,8 @@ function renderGraph(machine) {
   graphSvg.style.transform = `scale(${state.scale})`;
 }
 
-function runInputTest() {
-  if (!state.machine) {
-    setTestResult('warn', 'Generate a valid machine before testing.');
-    return;
-  }
-
-  const symbols = testInput.value.trim().split('').filter(Boolean);
-  const alphabet = new Set(state.machine.alphabet);
-  const badSymbol = symbols.find((s) => !alphabet.has(s));
-  if (badSymbol) {
-    setTestResult('warn', `Input contains symbol "${badSymbol}" not found in machine alphabet.`);
-    return;
-  }
-
-  const transitionsByState = new Map();
-  for (const t of state.machine.transitions) {
-    const arr = transitionsByState.get(t.from) || [];
-    arr.push(t);
-    transitionsByState.set(t.from, arr);
-  }
-
-  let currentStates = new Set(state.machine.start_states);
-  if (currentStates.size === 0) {
-    setTestResult('warn', 'No start state found in machine.');
-    return;
-  }
-
-  for (const symbol of symbols) {
-    const next = new Set();
-    for (const st of currentStates) {
-      const outgoing = transitionsByState.get(st) || [];
-      for (const tr of outgoing) {
-        if (tr.symbol === symbol) next.add(tr.to);
-      }
-    }
-    currentStates = next;
-    if (currentStates.size === 0) break;
-  }
-
-  const accepts = new Set(state.machine.accept_states);
-  const accepted = [...currentStates].some((s) => accepts.has(s));
-  setTestResult(accepted ? 'accept' : 'reject', accepted ? 'Accepted' : 'Rejected');
-}
-
 function renderParseResult(result) {
   clearMessages();
-  setTestResult('warn', 'Generate machine and test an input string.');
-
   if (result.diagnostics.errors.length > 0) {
     result.diagnostics.errors.forEach((m) => addMessage('err', m));
     jsonOutput.textContent = 'Cannot generate JSON due to errors.';
@@ -454,6 +391,7 @@ function renderParseResult(result) {
 
   result.diagnostics.warnings.forEach((m) => addMessage('warn', m));
   result.diagnostics.infos.forEach((m) => addMessage('ok', m));
+
   if (result.diagnostics.warnings.length === 0 && result.diagnostics.infos.length === 0) {
     addMessage('ok', 'Machine parsed successfully with no warnings.');
   }
@@ -474,26 +412,18 @@ async function copyText(content, label) {
 }
 
 parseBtn.addEventListener('click', () => {
-  renderParseResult(parseMachine(machineInput.value, machineMode.value));
+  const result = parseMachine(machineInput.value);
+  renderParseResult(result);
 });
 
 loadSampleBtn.addEventListener('click', () => {
   machineInput.value = SAMPLE;
-  renderParseResult(parseMachine(machineInput.value, machineMode.value));
+  const result = parseMachine(machineInput.value);
+  renderParseResult(result);
 });
-
-runTestBtn.addEventListener('click', runInputTest);
 
 copyJsonBtn.addEventListener('click', () => copyText(jsonOutput.textContent, 'JSON'));
 copyPromptBtn.addEventListener('click', () => copyText(promptOutput.textContent, 'instruction'));
-
-openInstructionBtn.addEventListener('click', () => instructionModal.showModal());
-closeInstructionBtn.addEventListener('click', () => instructionModal.close());
-instructionModal.addEventListener('click', (event) => {
-  const rect = instructionModal.getBoundingClientRect();
-  const inDialog = event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
-  if (!inDialog) instructionModal.close();
-});
 
 zoomInBtn.addEventListener('click', () => {
   state.scale = Math.min(2.5, state.scale + 0.15);
@@ -509,5 +439,4 @@ resetViewBtn.addEventListener('click', () => {
 });
 
 machineInput.value = SAMPLE;
-promptOutput.textContent = buildMemoryInstruction();
-renderParseResult(parseMachine(SAMPLE, machineMode.value));
+renderParseResult(parseMachine(SAMPLE));

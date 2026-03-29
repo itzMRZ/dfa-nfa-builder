@@ -8,86 +8,62 @@
   </head>
   <body>
     <main class="app-shell">
-      <header class="topbar">
-        <div>
-          <h1>DFA / NFA Builder</h1>
-          <p>Simple line-based editor for machine definitions, graph preview, JSON export, and acceptance testing.</p>
-        </div>
-        <div class="topbar-actions">
-          <button id="openInstructionBtn" type="button">AI Instruction</button>
-          <button id="loadSampleBtn" type="button">Load Sample</button>
-        </div>
+      <header>
+        <h1>LLM-Friendly DFA/NFA Generator</h1>
+        <p>
+          Write states in a strict line format, generate a machine model, and visualize it in a collision-aware graph view.
+        </p>
       </header>
 
-      <section class="workspace">
-        <aside class="panel left-column">
-          <div class="input-head">
-            <h2>Machine Input</h2>
-            <div class="input-controls">
-              <label class="inline-field" for="machineMode">
-                Mode
-                <select id="machineMode">
-                  <option value="DFA">DFA</option>
-                  <option value="NFA">NFA</option>
-                </select>
-              </label>
-              <button id="parseBtn" type="button" class="primary">Generate</button>
-            </div>
+      <section class="panel editor-panel">
+        <div class="panel-title-row">
+          <h2>Machine Definition</h2>
+          <div class="panel-actions">
+            <button id="loadSampleBtn" type="button">Load Sample</button>
+            <button id="parseBtn" type="button" class="primary">Generate</button>
           </div>
+        </div>
+        <label for="machineInput" class="hint">
+          One state per line: <code>state - flags - symbol(target) symbol2,symbol3(target)</code>
+        </label>
+        <textarea
+          id="machineInput"
+          spellcheck="false"
+          placeholder="q0 - start - 1(q2) 0(qt)\nq1 - accept - 1,0(q1)\nqt - trap - 1,0(qt)"
+        ></textarea>
+        <div id="messages" class="messages" role="status" aria-live="polite"></div>
+      </section>
 
-          <label for="machineInput" class="hint">
-            Format: <code>state - flags - symbol(target) symbol2,symbol3(target)</code>
-          </label>
-          <textarea
-            id="machineInput"
-            spellcheck="false"
-            placeholder="q0 - start - 1(q2) 0(qt)\nq1 - accept - 1,0(q1)\nqt - trap - 1,0(qt)"
-          ></textarea>
+      <section class="panel output-panel">
+        <div class="panel-title-row">
+          <h2>LLM JSON Output</h2>
+          <button id="copyJsonBtn" type="button">Copy JSON</button>
+        </div>
+        <pre id="jsonOutput" class="output-box">Generate to view normalized machine JSON...</pre>
+      </section>
 
-          <div class="tester-row">
-            <h2>Acceptance Test</h2>
-            <div class="tester-inputs">
-              <input id="testInput" type="text" placeholder="Enter symbols, e.g. 1010" />
-              <button id="runTestBtn" type="button">Test String</button>
-            </div>
-            <div id="testResult" class="test-result">Generate machine and test an input string.</div>
+      <section class="panel output-panel">
+        <div class="panel-title-row">
+          <h2>Prompt / Memory Instruction</h2>
+          <button id="copyPromptBtn" type="button">Copy Instruction</button>
+        </div>
+        <pre id="promptOutput" class="output-box">Generate to view reusable LLM instruction...</pre>
+      </section>
+
+      <section class="panel graph-panel">
+        <div class="panel-title-row">
+          <h2>Graph View (Dark Mode)</h2>
+          <div class="panel-actions">
+            <button id="zoomInBtn" type="button">+</button>
+            <button id="zoomOutBtn" type="button">−</button>
+            <button id="resetViewBtn" type="button">Reset</button>
           </div>
-
-          <h2>Messages</h2>
-          <div id="messages" class="messages" role="status" aria-live="polite"></div>
-        </aside>
-
-        <section class="panel right-column">
-          <div class="graph-header">
-            <h2>Graph</h2>
-            <div class="panel-actions">
-              <button id="zoomInBtn" type="button">+</button>
-              <button id="zoomOutBtn" type="button">−</button>
-              <button id="resetViewBtn" type="button">Reset</button>
-            </div>
-          </div>
-
-          <div id="graphWrapper" class="graph-wrapper">
-            <svg id="graphSvg" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid meet" aria-label="State machine graph"></svg>
-          </div>
-
-          <button id="copyJsonBtn" type="button" class="copy-json-btn">Copy JSON</button>
-          <pre id="jsonOutput" class="output-box">Generate to view normalized machine JSON...</pre>
-        </section>
+        </div>
+        <div id="graphWrapper" class="graph-wrapper">
+          <svg id="graphSvg" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid meet" aria-label="State machine graph"></svg>
+        </div>
       </section>
     </main>
-
-    <dialog id="instructionModal" class="modal">
-      <div class="modal-head">
-        <h2>AI System Instruction</h2>
-        <button id="closeInstructionBtn" type="button" class="ghost">Close</button>
-      </div>
-      <p class="modal-subtext">Save this in model memory/custom instructions to force strict DFA/NFA formatting.</p>
-      <pre id="promptOutput" class="output-box modal-box">Generate to view reusable LLM instruction...</pre>
-      <div class="modal-actions">
-        <button id="copyPromptBtn" type="button" class="primary">Copy Instruction</button>
-      </div>
-    </dialog>
 
     <script src="app.js"></script>
   </body>

@@ -1,6 +1,9 @@
 const machineInput = document.getElementById('machineInput');
 const parseBtn = document.getElementById('parseBtn');
 const loadSampleBtn = document.getElementById('loadSampleBtn');
+const openInstructionBtn = document.getElementById('openInstructionBtn');
+const closeInstructionBtn = document.getElementById('closeInstructionBtn');
+const instructionModal = document.getElementById('instructionModal');
 const messages = document.getElementById('messages');
 const jsonOutput = document.getElementById('jsonOutput');
 const promptOutput = document.getElementById('promptOutput');
@@ -13,13 +16,10 @@ const resetViewBtn = document.getElementById('resetViewBtn');
 
 const SAMPLE = `q0 - start - 1(q2) 0(qt)
 q1 - accept - 1,0(q1)
-q2 - middle - 0(q1) 1(q2)
+q2 - normal - 0(q1) 1(q2)
 qt - trap - 1,0(qt)`;
 
-const state = {
-  scale: 1,
-  machine: null,
-};
+const state = { scale: 1, machine: null };
 
 function addMessage(level, text) {
   const line = document.createElement('div');
@@ -54,6 +54,7 @@ function parseTransitions(transitionChunk, lineNo) {
     }
     const rawSymbols = match[1].split(',').map((s) => s.trim()).filter(Boolean);
     const target = match[2].trim();
+
     if (!target) {
       errors.push(`Line ${lineNo}: missing target in "${part}".`);
       continue;
@@ -62,9 +63,8 @@ function parseTransitions(transitionChunk, lineNo) {
       errors.push(`Line ${lineNo}: no symbols in "${part}".`);
       continue;
     }
-    rawSymbols.forEach((symbol) => {
-      transitions.push({ symbol, target });
-    });
+
+    rawSymbols.forEach((symbol) => transitions.push({ symbol, target }));
   }
 
   return { transitions, errors };
@@ -96,7 +96,6 @@ function parseMachine(rawText) {
       diagnostics.errors.push(`Line ${lineNo}: missing state name.`);
       continue;
     }
-
     if (map.has(name)) {
       diagnostics.errors.push(`Line ${lineNo}: duplicate state definition "${name}".`);
       continue;
@@ -114,9 +113,7 @@ function parseMachine(rawText) {
     });
   }
 
-  if (diagnostics.errors.length > 0) {
-    return { diagnostics };
-  }
+  if (diagnostics.errors.length > 0) return { diagnostics };
 
   const states = Array.from(map.values());
   const stateNames = new Set(states.map((s) => s.id));
@@ -129,38 +126,26 @@ function parseMachine(rawText) {
     }
   }
 
-  // Create implicit states for missing targets.
   const missingTargets = new Set(
     states.flatMap((s) => s.transitions.map((t) => t.target)).filter((t) => !stateNames.has(t)),
   );
 
   for (const missing of missingTargets) {
-    states.push({
-      id: missing,
-      flags: ['implicit'],
-      transitions: [],
-      lineNo: null,
-    });
+    states.push({ id: missing, flags: ['implicit'], transitions: [], lineNo: null });
     stateNames.add(missing);
   }
 
   const startStates = states.filter((s) => s.flags.includes('start')).map((s) => s.id);
   const acceptStates = states.filter((s) => s.flags.includes('accept') || s.flags.includes('final')).map((s) => s.id);
 
-  if (startStates.length === 0) {
-    diagnostics.warnings.push('No start state marked. Add "start" flag for at least one state.');
-  }
-  if (startStates.length > 1) {
-    diagnostics.infos.push('Multiple start states detected; machine is treated as NFA.');
-  }
+  if (startStates.length === 0) diagnostics.warnings.push('No start state marked. Add "start" flag for at least one state.');
+  if (startStates.length > 1) diagnostics.infos.push('Multiple start states detected; machine is treated as NFA.');
 
   const seen = new Set();
   for (const s of states) {
     for (const tr of s.transitions) {
       const key = `${s.id}|${tr.symbol}|${tr.target}`;
-      if (seen.has(key)) {
-        diagnostics.warnings.push(`Duplicate transition ${s.id} --${tr.symbol}--> ${tr.target}.`);
-      }
+      if (seen.has(key)) diagnostics.warnings.push(`Duplicate transition ${s.id} --${tr.symbol}--> ${tr.target}.`);
       seen.add(key);
     }
   }
@@ -173,9 +158,7 @@ function parseMachine(rawText) {
     start_states: startStates,
     accept_states: acceptStates,
     alphabet,
-    transitions: states.flatMap((s) =>
-      s.transitions.map((tr) => ({ from: s.id, symbol: tr.symbol, to: tr.target })),
-    ),
+    transitions: states.flatMap((s) => s.transitions.map((tr) => ({ from: s.id, symbol: tr.symbol, to: tr.target }))),
     meta: {
       total_states: states.length,
       total_transitions: states.reduce((acc, cur) => acc + cur.transitions.length, 0),
@@ -186,18 +169,33 @@ function parseMachine(rawText) {
 }
 
 function buildMemoryInstruction() {
-  return `When user describes a DFA/NFA, ALWAYS output each state on one line in this exact format:
-<state_name> - <flags> - <symbol1>(<target_state>) <symbol2,target_symbol>(<target_state>)
+  return `SYSTEM INSTRUCTION: DFA/NFA STRICT FORMAT
 
-Rules:
-1) Use hyphen separators exactly as: state - flags - transitions.
-2) Flags are lowercase words separated by comma or space (example: start, accept, trap).
-3) Each transition token must be symbol-list(target), no ASCII art.
-4) Multiple symbols to the same target are comma-separated inside symbol-list.
-5) One state per line, no tables, no markdown diagrams.
-6) Keep deterministic machines with one start state; if multiple start states are needed, classify as NFA.
-7) If a target state is referenced, it must exist as a state line.
-8) Add trap state explicitly when needed.
+Always encode automata in a strict line format. Do NOT produce ASCII art, tables, diagrams, or free-form transition prose.
+
+Output schema (one line per state):
+<state_id> - <flags> - <symbol_list>(<target_state>) <symbol_list>(<target_state>) ...
+
+Definitions:
+- state_id: unique state name (e.g., q0, q1, trap).
+- flags: lowercase labels separated by comma or space.
+  Allowed meanings:
+  * start = initial state
+  * accept or final = accepting state
+  * trap = dead state
+  * normal = regular state (use when no special role)
+- symbol_list: one or more input symbols separated by commas that share the same target.
+  Example: 0,1(q2) means both 0 and 1 transition to q2.
+- target_state: destination state_id; every referenced target must also appear as a state line.
+
+Hard rules:
+1) Exactly this separator structure: state - flags - transitions.
+2) Exactly one state per line.
+3) Every transition token must be symbols(target).
+4) Keep state names consistent across all lines.
+5) If DFA is requested: max one transition per symbol per state and one start state.
+6) If multiple start states are used, treat machine as NFA.
+7) Include trap state explicitly when language logic requires it.
 
 Example:
 q0 - start - 1(q2) 0(qt)
@@ -218,7 +216,6 @@ function createLayout(machine) {
     node.y = 120 + row * spacing;
   });
 
-  // Repel close nodes to reduce collisions for dense graphs.
   const minDist = Math.max(70, spacing * 0.6);
   for (let pass = 0; pass < 120; pass += 1) {
     let moved = false;
@@ -249,7 +246,6 @@ function createLayout(machine) {
 
 function renderGraph(machine) {
   graphSvg.innerHTML = '';
-
   if (!machine || machine.states.length === 0) return;
 
   const nodes = createLayout(machine);
@@ -275,8 +271,7 @@ function renderGraph(machine) {
     const target = nodeMap.get(edge.to);
     if (!source || !target) return;
 
-    const selfLoop = source.id === target.id;
-    if (selfLoop) {
+    if (source.id === target.id) {
       const loop = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       const d = `M ${source.x} ${source.y - radius} C ${source.x + radius * 1.4} ${source.y - radius * 2.6}, ${source.x - radius * 1.4} ${source.y - radius * 2.6}, ${source.x} ${source.y - radius}`;
       loop.setAttribute('d', d);
@@ -327,7 +322,6 @@ function renderGraph(machine) {
 
   nodes.forEach((node) => {
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-
     const isAccept = node.flags.includes('accept') || node.flags.includes('final');
     const isStart = node.flags.includes('start');
     const isTrap = node.flags.includes('trap');
@@ -366,7 +360,6 @@ function renderGraph(machine) {
 
   graphSvg.appendChild(nodeGroup);
 
-  // Fit viewbox with margins so many nodes stay inside viewport.
   const xs = nodes.map((n) => n.x);
   const ys = nodes.map((n) => n.y);
   const minX = Math.min(...xs) - 120;
@@ -380,6 +373,7 @@ function renderGraph(machine) {
 
 function renderParseResult(result) {
   clearMessages();
+
   if (result.diagnostics.errors.length > 0) {
     result.diagnostics.errors.forEach((m) => addMessage('err', m));
     jsonOutput.textContent = 'Cannot generate JSON due to errors.';
@@ -391,7 +385,6 @@ function renderParseResult(result) {
 
   result.diagnostics.warnings.forEach((m) => addMessage('warn', m));
   result.diagnostics.infos.forEach((m) => addMessage('ok', m));
-
   if (result.diagnostics.warnings.length === 0 && result.diagnostics.infos.length === 0) {
     addMessage('ok', 'Machine parsed successfully with no warnings.');
   }
@@ -412,18 +405,24 @@ async function copyText(content, label) {
 }
 
 parseBtn.addEventListener('click', () => {
-  const result = parseMachine(machineInput.value);
-  renderParseResult(result);
+  renderParseResult(parseMachine(machineInput.value));
 });
 
 loadSampleBtn.addEventListener('click', () => {
   machineInput.value = SAMPLE;
-  const result = parseMachine(machineInput.value);
-  renderParseResult(result);
+  renderParseResult(parseMachine(machineInput.value));
 });
 
 copyJsonBtn.addEventListener('click', () => copyText(jsonOutput.textContent, 'JSON'));
 copyPromptBtn.addEventListener('click', () => copyText(promptOutput.textContent, 'instruction'));
+
+openInstructionBtn.addEventListener('click', () => instructionModal.showModal());
+closeInstructionBtn.addEventListener('click', () => instructionModal.close());
+instructionModal.addEventListener('click', (event) => {
+  const rect = instructionModal.getBoundingClientRect();
+  const inDialog = event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
+  if (!inDialog) instructionModal.close();
+});
 
 zoomInBtn.addEventListener('click', () => {
   state.scale = Math.min(2.5, state.scale + 0.15);

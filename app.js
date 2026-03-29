@@ -1,4 +1,8 @@
 const machineInput = document.getElementById('machineInput');
+const machineMode = document.getElementById('machineMode');
+const testInput = document.getElementById('testInput');
+const testResult = document.getElementById('testResult');
+const runTestBtn = document.getElementById('runTestBtn');
 const parseBtn = document.getElementById('parseBtn');
 const loadSampleBtn = document.getElementById('loadSampleBtn');
 const openInstructionBtn = document.getElementById('openInstructionBtn');
@@ -26,6 +30,11 @@ function addMessage(level, text) {
   line.className = `msg-${level}`;
   line.textContent = text;
   messages.appendChild(line);
+}
+
+function setTestResult(kind, text) {
+  testResult.className = `test-result ${kind}`;
+  testResult.textContent = text;
 }
 
 function clearMessages() {
@@ -70,7 +79,7 @@ function parseTransitions(transitionChunk, lineNo) {
   return { transitions, errors };
 }
 
-function parseMachine(rawText) {
+function parseMachine(rawText, requestedMode) {
   const lines = rawText
     .split('\n')
     .map((line, idx) => ({ original: line, lineNo: idx + 1 }))
@@ -139,21 +148,38 @@ function parseMachine(rawText) {
   const acceptStates = states.filter((s) => s.flags.includes('accept') || s.flags.includes('final')).map((s) => s.id);
 
   if (startStates.length === 0) diagnostics.warnings.push('No start state marked. Add "start" flag for at least one state.');
-  if (startStates.length > 1) diagnostics.infos.push('Multiple start states detected; machine is treated as NFA.');
+  if (startStates.length > 1 && requestedMode === 'DFA') {
+    diagnostics.errors.push('DFA mode selected but multiple start states found. Use NFA mode or one start state.');
+  }
 
   const seen = new Set();
   for (const s of states) {
+    const outgoingBySymbol = new Map();
     for (const tr of s.transitions) {
       const key = `${s.id}|${tr.symbol}|${tr.target}`;
       if (seen.has(key)) diagnostics.warnings.push(`Duplicate transition ${s.id} --${tr.symbol}--> ${tr.target}.`);
       seen.add(key);
+
+      const symbolTargets = outgoingBySymbol.get(tr.symbol) || new Set();
+      symbolTargets.add(tr.target);
+      outgoingBySymbol.set(tr.symbol, symbolTargets);
+    }
+
+    if (requestedMode === 'DFA') {
+      for (const [symbol, targets] of outgoingBySymbol.entries()) {
+        if (targets.size > 1) {
+          diagnostics.errors.push(`DFA mode violation at state "${s.id}": symbol "${symbol}" has multiple targets.`);
+        }
+      }
     }
   }
+
+  if (diagnostics.errors.length > 0) return { diagnostics };
 
   const alphabet = [...new Set(states.flatMap((s) => s.transitions.map((t) => t.symbol)))].sort();
 
   const model = {
-    type: startStates.length > 1 ? 'NFA' : 'DFA_or_NFA',
+    type: requestedMode,
     states: states.map((s) => ({ id: s.id, flags: s.flags })),
     start_states: startStates,
     accept_states: acceptStates,
@@ -162,6 +188,7 @@ function parseMachine(rawText) {
     meta: {
       total_states: states.length,
       total_transitions: states.reduce((acc, cur) => acc + cur.transitions.length, 0),
+      requested_mode: requestedMode,
     },
   };
 
@@ -171,36 +198,25 @@ function parseMachine(rawText) {
 function buildMemoryInstruction() {
   return `SYSTEM INSTRUCTION: DFA/NFA STRICT FORMAT
 
-Always encode automata in a strict line format. Do NOT produce ASCII art, tables, diagrams, or free-form transition prose.
+Always encode automata in strict lines. Do NOT output ASCII art, tables, or prose-only transitions.
 
 Output schema (one line per state):
 <state_id> - <flags> - <symbol_list>(<target_state>) <symbol_list>(<target_state>) ...
 
 Definitions:
 - state_id: unique state name (e.g., q0, q1, trap).
-- flags: lowercase labels separated by comma or space.
-  Allowed meanings:
-  * start = initial state
-  * accept or final = accepting state
-  * trap = dead state
-  * normal = regular state (use when no special role)
-- symbol_list: one or more input symbols separated by commas that share the same target.
-  Example: 0,1(q2) means both 0 and 1 transition to q2.
-- target_state: destination state_id; every referenced target must also appear as a state line.
+- flags: lowercase labels separated by comma or space (start, accept/final, trap, normal).
+- symbol_list: one or more symbols separated by commas mapped to same target.
+- target_state: destination state_id and must exist as a state line.
 
 Hard rules:
-1) Exactly this separator structure: state - flags - transitions.
-2) Exactly one state per line.
+1) Exactly this layout: state - flags - transitions.
+2) One state per line.
 3) Every transition token must be symbols(target).
-4) Keep state names consistent across all lines.
-5) If DFA is requested: max one transition per symbol per state and one start state.
-6) If multiple start states are used, treat machine as NFA.
-7) Include trap state explicitly when language logic requires it.
-
-Example:
-q0 - start - 1(q2) 0(qt)
-q1 - accept - 1,0(q1)
-qt - trap - 1,0(qt)`;
+4) Keep state names consistent.
+5) For DFA requests: one start state and at most one target per symbol from each state.
+6) For NFA requests: multiple targets/start states allowed.
+7) Include trap state explicitly when needed.`;
 }
 
 function createLayout(machine) {
@@ -371,8 +387,53 @@ function renderGraph(machine) {
   graphSvg.style.transform = `scale(${state.scale})`;
 }
 
+function runInputTest() {
+  if (!state.machine) {
+    setTestResult('warn', 'Generate a valid machine before testing.');
+    return;
+  }
+
+  const symbols = testInput.value.trim().split('').filter(Boolean);
+  const alphabet = new Set(state.machine.alphabet);
+  const badSymbol = symbols.find((s) => !alphabet.has(s));
+  if (badSymbol) {
+    setTestResult('warn', `Input contains symbol "${badSymbol}" not found in machine alphabet.`);
+    return;
+  }
+
+  const transitionsByState = new Map();
+  for (const t of state.machine.transitions) {
+    const arr = transitionsByState.get(t.from) || [];
+    arr.push(t);
+    transitionsByState.set(t.from, arr);
+  }
+
+  let currentStates = new Set(state.machine.start_states);
+  if (currentStates.size === 0) {
+    setTestResult('warn', 'No start state found in machine.');
+    return;
+  }
+
+  for (const symbol of symbols) {
+    const next = new Set();
+    for (const st of currentStates) {
+      const outgoing = transitionsByState.get(st) || [];
+      for (const tr of outgoing) {
+        if (tr.symbol === symbol) next.add(tr.to);
+      }
+    }
+    currentStates = next;
+    if (currentStates.size === 0) break;
+  }
+
+  const accepts = new Set(state.machine.accept_states);
+  const accepted = [...currentStates].some((s) => accepts.has(s));
+  setTestResult(accepted ? 'accept' : 'reject', accepted ? 'Accepted' : 'Rejected');
+}
+
 function renderParseResult(result) {
   clearMessages();
+  setTestResult('warn', 'Generate machine and test an input string.');
 
   if (result.diagnostics.errors.length > 0) {
     result.diagnostics.errors.forEach((m) => addMessage('err', m));
@@ -405,13 +466,15 @@ async function copyText(content, label) {
 }
 
 parseBtn.addEventListener('click', () => {
-  renderParseResult(parseMachine(machineInput.value));
+  renderParseResult(parseMachine(machineInput.value, machineMode.value));
 });
 
 loadSampleBtn.addEventListener('click', () => {
   machineInput.value = SAMPLE;
-  renderParseResult(parseMachine(machineInput.value));
+  renderParseResult(parseMachine(machineInput.value, machineMode.value));
 });
+
+runTestBtn.addEventListener('click', runInputTest);
 
 copyJsonBtn.addEventListener('click', () => copyText(jsonOutput.textContent, 'JSON'));
 copyPromptBtn.addEventListener('click', () => copyText(promptOutput.textContent, 'instruction'));
@@ -438,4 +501,5 @@ resetViewBtn.addEventListener('click', () => {
 });
 
 machineInput.value = SAMPLE;
-renderParseResult(parseMachine(SAMPLE));
+promptOutput.textContent = buildMemoryInstruction();
+renderParseResult(parseMachine(SAMPLE, machineMode.value));

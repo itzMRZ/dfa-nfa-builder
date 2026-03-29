@@ -11,18 +11,30 @@
       <header class="topbar">
         <div>
           <h1>DFA / NFA Builder</h1>
-          <p>Simple line-based editor for machine definitions, graph preview, and JSON export.</p>
+          <p>Simple line-based editor for machine definitions, graph preview, JSON export, and acceptance testing.</p>
         </div>
         <div class="topbar-actions">
           <button id="openInstructionBtn" type="button">AI Instruction</button>
           <button id="loadSampleBtn" type="button">Load Sample</button>
-          <button id="parseBtn" type="button" class="primary">Generate</button>
         </div>
       </header>
 
       <section class="workspace">
         <aside class="panel left-column">
-          <h2>Machine Input</h2>
+          <div class="input-head">
+            <h2>Machine Input</h2>
+            <div class="input-controls">
+              <label class="inline-field" for="machineMode">
+                Mode
+                <select id="machineMode">
+                  <option value="DFA">DFA</option>
+                  <option value="NFA">NFA</option>
+                </select>
+              </label>
+              <button id="parseBtn" type="button" class="primary">Generate</button>
+            </div>
+          </div>
+
           <label for="machineInput" class="hint">
             Format: <code>state - flags - symbol(target) symbol2,symbol3(target)</code>
           </label>
@@ -31,6 +43,15 @@
             spellcheck="false"
             placeholder="q0 - start - 1(q2) 0(qt)\nq1 - accept - 1,0(q1)\nqt - trap - 1,0(qt)"
           ></textarea>
+
+          <div class="tester-row">
+            <h2>Acceptance Test</h2>
+            <div class="tester-inputs">
+              <input id="testInput" type="text" placeholder="Enter symbols, e.g. 1010" />
+              <button id="runTestBtn" type="button">Test String</button>
+            </div>
+            <div id="testResult" class="test-result">Generate machine and test an input string.</div>
+          </div>
 
           <h2>Messages</h2>
           <div id="messages" class="messages" role="status" aria-live="polite"></div>
